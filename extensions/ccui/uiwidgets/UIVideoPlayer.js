@@ -24,6 +24,10 @@
 
 ccui.VideoPlayer = ccui.Widget.extend({
 
+    _played: false,
+    _playing: false,
+    _stopped: true,
+
     ctor: function(path){
         ccui.Widget.prototype.ctor.call(this);
         this._EventList = {};
@@ -57,13 +61,24 @@ ccui.VideoPlayer = ccui.Widget.extend({
      * Play the video
      */
     play: function(){
-        var video = this._renderCmd._video;
+        var self = this,
+            video = this._renderCmd._video;
         if(video){
-            this._renderCmd._played = true;
+            this._played = true;
             video.pause();
-            setTimeout(function(){
+            if(this._stopped !== false || this._playing !== false || this._played !== true)
+                video.currentTime = 0;
+            if(ccui.VideoPlayer._polyfill.autoplayAfterOperation){
+                setTimeout(function(){
+                    video.play();
+                    self._playing = true;
+                    self._stopped = false;
+                }, 20);
+            }else{
                 video.play();
-            }, 20);
+                this._playing = true;
+                this._stopped = false;
+            }
         }
     },
 
@@ -72,20 +87,18 @@ ccui.VideoPlayer = ccui.Widget.extend({
      */
     pause: function(){
         var video = this._renderCmd._video;
-        if(video)
+        if(video && this._playing === true && this._stopped === false){
             video.pause();
+            this._playing = false;
+        }
     },
 
     /**
      * Resume the video
      */
     resume: function(){
-        var video = this._renderCmd._video;
-        if(video){
-            video.pause();
-            setTimeout(function(){
-                video.play();
-            }, 20);
+        if(this._stopped === false && this._playing === false && this._played === true){
+            this.play();
         }
     },
 
@@ -94,10 +107,12 @@ ccui.VideoPlayer = ccui.Widget.extend({
      */
     stop: function(){
         var self = this,
-            video = self._renderCmd._video;
+            video = this._renderCmd._video;
         if(video){
             video.pause();
             video.currentTime = 0;
+            this._playing = false;
+            this._stopped = true;
         }
 
         setTimeout(function(){
@@ -112,6 +127,11 @@ ccui.VideoPlayer = ccui.Widget.extend({
         var video = this._renderCmd._video;
         if(video){
             video.currentTime = sec;
+            if(ccui.VideoPlayer._polyfill.autoplayAfterOperation && this.isPlaying()){
+                setTimeout(function(){
+                    video.play();
+                }, 20);
+            }
         }
     },
 
@@ -120,8 +140,12 @@ ccui.VideoPlayer = ccui.Widget.extend({
      * @returns {boolean}
      */
     isPlaying: function(){
-        var video = this._renderCmd._video;
-        return (video && video.paused === false);
+        if(ccui.VideoPlayer._polyfill.autoplayAfterOperation && this._playing){
+            setTimeout(function(){
+                video.play();
+            }, 20);
+        }
+        return this._playing;
     },
 
     /**
@@ -233,16 +257,28 @@ ccui.VideoPlayer.EventType = {
     };
 
     (function(){
+        /**
+         * Some old browser only supports Theora encode video
+         * But native does not support this encode,
+         * so it is best to provide mp4 and webm or ogv file
+         */
         var dom = document.createElement("video");
-        if(dom.canPlayType("video/ogg"))
+        if(dom.canPlayType("video/ogg")){
             video._polyfill.canPlayType.push(".ogg");
+            video._polyfill.canPlayType.push(".ogv");
+        }
         if(dom.canPlayType("video/mp4"))
             video._polyfill.canPlayType.push(".mp4");
+        if(dom.canPlayType("video/webm"))
+            video._polyfill.canPlayType.push(".webm");
     })();
 
     if(cc.sys.OS_IOS === cc.sys.os){
         video._polyfill.devicePixelRatio = true;
         video._polyfill.event = "progress";
+    }
+    if(cc.sys.browserType === cc.sys.BROWSER_TYPE_FIREFOX){
+        video._polyfill.autoplayAfterOperation = true;
     }
 
     var style = document.createElement("style");
@@ -337,6 +373,7 @@ ccui.VideoPlayer.EventType = {
 
     proto.updateURL = function(path){
         var source, video, hasChild, container, extname;
+        var node = this._node;
 
         if (this._url == path)
             return;
@@ -362,6 +399,8 @@ ccui.VideoPlayer.EventType = {
         var self = this;
 
         var cb = function(){
+            if(self._loaded == true)
+                return;
             self._loaded = true;
             self.changeSize();
             self.setDirtyFlag(cc.Node._dirtyFlags.transformDirty);
@@ -370,7 +409,7 @@ ccui.VideoPlayer.EventType = {
             video.style["visibility"] = "visible";
             //IOS does not display video images
             video.play();
-            if(!self._played){
+            if(!node._played){
                 video.pause();
                 video.currentTime = 0;
             }
@@ -381,7 +420,9 @@ ccui.VideoPlayer.EventType = {
         video.preload = "metadata";
         video.style["visibility"] = "hidden";
         this._loaded = false;
-        this._played = false;
+        node._played = false;
+        node._playing = false;
+        node._stopped = true;
         this.initStyle();
         this.visit();
 
@@ -400,11 +441,13 @@ ccui.VideoPlayer.EventType = {
     };
 
     proto.bindEvent = function(){
-        var node = this._node,
+        var self = this,
+            node = this._node,
             video = this._video;
         //binding event
         video.addEventListener("ended", function(){
-            node._renderCmd.updateMatrix();
+            node._renderCmd.updateMatrix(self._worldTransform, cc.view._scaleX, cc.view._scaleY);
+            node._playing = false;
             node._dispatchEvent(ccui.VideoPlayer.EventType.COMPLETED);
         });
         video.addEventListener("play", function(){
